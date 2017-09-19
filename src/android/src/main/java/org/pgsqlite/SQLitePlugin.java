@@ -48,6 +48,8 @@ import java.io.IOException;
 
 public class SQLitePlugin extends ReactContextBaseJavaModule {
 
+    public static SQLitePlugin currentSql;
+
     public static final String TAG = SQLitePlugin.class.getSimpleName();
 
     private static final String PLUGIN_NAME = "SQLite";
@@ -76,6 +78,8 @@ public class SQLitePlugin extends ReactContextBaseJavaModule {
         super(reactContext);
         this.context = reactContext.getApplicationContext();
         this.threadPool = Executors.newCachedThreadPool();
+
+        SQLitePlugin.currentSql = this;
     }
 
     /**
@@ -885,6 +889,187 @@ public class SQLitePlugin extends ReactContextBaseJavaModule {
                 // ignore
             }
         }
+    }
+
+
+    /*
+    * 同步执行查询操作
+    * */
+    @SuppressLint("NewApi")
+    public JSONArray executeSql(String openid) {
+
+        String dbname = "cache.db";
+        String[] queryarr = new String[1];
+        queryarr[0] = "select * from t_jx_user where openid=? limit 1";
+        String[] queryIDs = new String[1];
+        queryIDs[0] = "1111";
+        JSONArray[] jsonparams = new JSONArray[1];
+        try {
+            JSONArray jsonA = new JSONArray("[" + "\"" + openid + "\"" + "]");
+            jsonparams[0] = jsonA;
+        }
+        catch (Exception e) {
+            e.printStackTrace();
+        }
+
+        SQLiteDatabase mydb = getDatabase(dbname);
+
+        if (mydb == null) {
+            return null;
+        }
+
+        String query;
+        String query_id;
+        int len = queryarr.length;
+        JSONArray batchResults = new JSONArray();
+
+        for (int i = 0; i < len; i++) {
+            query_id = queryIDs[i];
+
+            JSONObject queryResult = null;
+            String errorMessage = "unknown";
+
+            try {
+                boolean needRawQuery = true;
+
+                query = queryarr[i];
+
+                QueryType queryType = getQueryType(query);
+
+                if (queryType == QueryType.update || queryType == QueryType.delete) {
+                    SQLiteStatement myStatement = null;
+                    int rowsAffected = -1; // (assuming invalid)
+
+                    try {
+                        myStatement = mydb.compileStatement(query);
+                        if (jsonparams != null) {
+                            bindArgsToStatement(myStatement, jsonparams[i]);
+                        }
+
+                        rowsAffected = myStatement.executeUpdateDelete();
+                        // Indicate valid results:
+                        needRawQuery = false;
+                    } catch (SQLiteException ex) {
+                        // Indicate problem & stop this query:
+                        errorMessage = ex.getMessage();
+                        FLog.e(TAG, "SQLiteStatement.executeUpdateDelete() failed", ex);
+                        needRawQuery = false;
+                    } finally {
+                        closeQuietly(myStatement);
+                    }
+
+                    if (rowsAffected != -1) {
+                        queryResult = new JSONObject();
+                        queryResult.put("rowsAffected", rowsAffected);
+                    }
+                }
+
+                // INSERT:
+                if (queryType == QueryType.insert && jsonparams != null) {
+                    needRawQuery = false;
+
+                    SQLiteStatement myStatement = mydb.compileStatement(query);
+
+                    bindArgsToStatement(myStatement, jsonparams[i]);
+
+                    long insertId; // (invalid) = -1
+
+                    try {
+                        insertId = myStatement.executeInsert();
+
+                        // statement has finished with no constraint violation:
+                        queryResult = new JSONObject();
+                        if (insertId != -1) {
+                            queryResult.put("insertId", insertId);
+                            queryResult.put("rowsAffected", 1);
+                        } else {
+                            queryResult.put("rowsAffected", 0);
+                        }
+                    } catch (SQLiteException ex) {
+                        // report error result with the error message
+                        // could be constraint violation or some other error
+                        errorMessage = ex.getMessage();
+                        FLog.e(TAG, "SQLiteDatabase.executeInsert() failed", ex);
+                    } finally {
+                        closeQuietly(myStatement);
+                    }
+                }
+
+                if (queryType == QueryType.begin) {
+                    needRawQuery = false;
+                    try {
+                        mydb.beginTransaction();
+
+                        queryResult = new JSONObject();
+                        queryResult.put("rowsAffected", 0);
+                    } catch (SQLiteException ex) {
+                        errorMessage = ex.getMessage();
+                        FLog.e(TAG, "SQLiteDatabase.beginTransaction() failed", ex);
+                    }
+                }
+
+                if (queryType == QueryType.commit) {
+                    needRawQuery = false;
+                    try {
+                        mydb.setTransactionSuccessful();
+                        mydb.endTransaction();
+
+                        queryResult = new JSONObject();
+                        queryResult.put("rowsAffected", 0);
+                    } catch (SQLiteException ex) {
+                        errorMessage = ex.getMessage();
+                        FLog.e(TAG, "SQLiteDatabase.setTransactionSuccessful/endTransaction() failed", ex);
+                    }
+                }
+
+                if (queryType == QueryType.rollback) {
+                    needRawQuery = false;
+                    try {
+                        mydb.endTransaction();
+
+                        queryResult = new JSONObject();
+                        queryResult.put("rowsAffected", 0);
+                    } catch (SQLiteException ex) {
+                        errorMessage = ex.getMessage();
+                        FLog.e(TAG, "SQLiteDatabase.endTransaction() failed", ex);
+                    }
+                }
+
+                // raw query for other statements:
+                if (needRawQuery) {
+                    queryResult = this.executeSqlStatementQuery(mydb, query, jsonparams[i], null);
+                }
+            } catch (Exception ex) {
+                errorMessage = ex.getMessage();
+                FLog.e(TAG, "SQLitePlugin.executeSql[Batch](): failed", ex);
+            }
+
+            try {
+                if (queryResult != null) {
+                    JSONObject r = new JSONObject();
+                    r.put("qid", query_id);
+
+                    r.put("type", "success");
+                    r.put("result", queryResult);
+
+                    batchResults.put(r);
+                } else {
+                    JSONObject r = new JSONObject();
+                    r.put("qid", query_id);
+                    r.put("type", "error");
+
+                    JSONObject er = new JSONObject();
+                    er.put("message", errorMessage);
+                    r.put("result", er);
+
+                    batchResults.put(r);
+                }
+            } catch (JSONException ex) {
+                FLog.e(TAG, "SQLitePlugin.executeSql[Batch]() failed", ex);
+            }
+        }
+
+        return batchResults;
     }
 
     private class DBRunner implements Runnable {

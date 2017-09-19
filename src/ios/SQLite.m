@@ -66,6 +66,22 @@ static void sqlite_regexp(sqlite3_context* context, int argc, sqlite3_value** va
 }
 
 
+
+@implementation SqlInstance
++ (SqlInstance *)sharedInstance {
+  static SqlInstance * instance;
+  static dispatch_once_t onceToken;
+  dispatch_once(&onceToken, ^{
+    if (!instance) {
+      instance = [[SqlInstance alloc] init];
+    }
+  });
+  return instance;
+}
+
+@end
+
+
 @implementation SQLite
 
 RCT_EXPORT_MODULE();
@@ -119,6 +135,7 @@ RCT_EXPORT_MODULE();
         [appDBPaths setObject: libs forKey:@"nosync"];
       }
     }
+    [SqlInstance sharedInstance].currentSql = self;
   }
   return self;
 }
@@ -454,6 +471,40 @@ RCT_EXPORT_METHOD(executeSql: (NSDictionary *) options success:(RCTResponseSende
   success(@[pluginResult.message]);
 }
 
+- (NSArray *)executeSql: (NSDictionary *) options {
+  NSMutableArray *results = [NSMutableArray arrayWithCapacity:0];
+  NSMutableDictionary *dbargs = options[@"dbargs"];
+  NSMutableArray *executes = options[@"executes"];
+  
+  SQLiteResult *pluginResult;
+  
+  @synchronized(self) {
+    for (NSMutableDictionary *dict in executes) {
+      SQLiteResult *result = [self executeSqlWithDict:dict andArgs:dbargs];
+      if ([result.status intValue] == SQLiteStatus_ERROR) {
+        /* add error with result.message: */
+        NSMutableDictionary *r = [NSMutableDictionary dictionaryWithCapacity:4];
+        [r setObject:dict[@"qid"] forKey:@"qid"];
+        [r setObject:@"error" forKey:@"type"];
+        [r setObject:result.message forKey:@"error"];
+        [r setObject:result.message forKey:@"result"];
+        [results addObject: r];
+      } else {
+        /* add result with result.message: */
+        NSMutableDictionary *r = [NSMutableDictionary dictionaryWithCapacity:3];
+        [r setObject:dict[@"qid"] forKey:@"qid"];
+        [r setObject:@"success" forKey:@"type"];
+        [r setObject:result.message forKey:@"result"];
+        [results addObject: r];
+      }
+    }
+    
+    pluginResult = [SQLiteResult resultWithStatus:SQLiteStatus_OK messageAsArray:results];
+  }
+  
+  return (@[pluginResult.message]);
+}
+
 -(SQLiteResult *) executeSqlWithDict: (NSMutableDictionary*)options andArgs: (NSMutableDictionary*)dbargs
 {
   NSString *dbfilename = dbargs[@"dbname"];
@@ -715,6 +766,10 @@ RCT_EXPORT_METHOD(executeSql: (NSDictionary *) options success:(RCTResponseSende
 #endif
   
   return result;
+}
+
++ (id)getCurrentSql {
+  return [SqlInstance sharedInstance];
 }
 
 @end /* vim: set expandtab : */

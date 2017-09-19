@@ -29,6 +29,14 @@ enum WebSQLError {
     TIMEOUT_ERR = 7
 };
 typedef int WebSQLError;
+@class SQLite;
+@interface SqlInstance : NSObject
+
+@property (nonatomic, assign) SQLite * currentSql;
+
++ (SqlInstance *)sharedInstance;
+
+@end
 
 @interface SQLite : NSObject <RCTBridgeModule> {
     NSMutableDictionary *openDBs;
@@ -53,4 +61,7 @@ typedef int WebSQLError;
 
 // Echo Test
 -(void) echoStringValue:(NSDictionary *) options success:(RCTResponseSenderBlock)success error:(RCTResponseSenderBlock)error;
+
+- (NSArray *)executeSql: (NSDictionary *) options;
+
 @end
